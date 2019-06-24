@@ -1,0 +1,12 @@
+- hosts: dedicated_compute
+  tasks:
+    - name: show CPU info of Hypervisor
+      ignore_errors: True
+      shell:
+        source openstack.creds;
+        sleep 10;
+        sudo cps host-show F2B9588E-B6D6-E711-8B70-E472E2ECD6E4 | grep evs;
+      args:
+          executable: /bin/bash
+      register: cmd
+    - debug: var=cmd.stdout_lines

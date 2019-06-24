@@ -1,0 +1,206 @@
+---
+
+- hosts: localhost
+  tasks:
+    - include: clean_all.yml
+    - name: create role
+      shell:
+        source {{ inventory_dir }}/openstack.creds;
+        openstack {{ openstack_opts }} role list | grep -w admin | awk '{print $2}';
+        openstack {{ openstack_opts }} role show admin;
+      args:
+        executable: /bin/bash
+      register: o_role
+    - debug: var=o_role.stdout_lines
+
+    - name: create user with password
+      shell:
+        source {{ inventory_dir }}/openstack.creds;
+        user_name={{ prefix }}_$RANDOM;
+        echo $user_name;
+        pass_word=Cmcc@123;
+        echo $pass_word;
+        openstack {{ openstack_opts }} user create --domain $OS_PROJECT_DOMAIN_NAME --password $pass_word $user_name;
+        openstack {{ openstack_opts }} user show $user_name;
+        openstack {{ openstack_opts }} user list | grep $user_name | awk '{print $2}';
+      args:
+        executable: /bin/bash
+      register: o_user
+    - debug: var=o_user.stdout_lines
+
+    - name: create project
+      shell:
+        source {{ inventory_dir }}/openstack.creds;
+        pj_name={{ prefix }}_$RANDOM;
+        echo $pj_name;
+        openstack {{ openstack_opts }} project create --domain $OS_PROJECT_DOMAIN_NAME $pj_name;
+        openstack {{ openstack_opts }} project show $pj_name;
+        openstack {{ openstack_opts }} project list | grep $pj_name | awk '{print $2}';
+      args:
+        executable: /bin/bash
+      register: o_project
+    - debug: var=o_project.stdout_lines
+
+    - name:  associate project with user and role
+      shell:
+        source {{ inventory_dir }}/openstack.creds;
+        openstack {{ openstack_opts }} role add --project {{ o_project.stdout_lines[0] }} --user {{ o_user.stdout_lines[0] }} {{ o_role.stdout_lines[0] }};
+        openstack {{ openstack_opts }} role assignment list | grep {{ o_project.stdout_lines[-1] }} | grep {{ o_role.stdout_lines[0] }} | grep {{ o_user.stdout_lines[-1] }};
+      args:
+        executable: /bin/bash
+      register: o_relation
+    - debug: var=o_relation.stdout_lines
+
+    - name: modify env for project1
+      shell:
+        cp {{ inventory_dir }}/openstack.creds.tenant {{ inventory_dir }}/openstack.creds.tenant1;
+        echo "export OS_PASSWORD=Cmcc@123" >> {{ inventory_dir }}/openstack.creds.tenant1;
+        echo "export OS_USERNAME={{o_user.stdout_lines[0] }}" >> {{ inventory_dir }}/openstack.creds.tenant1;
+        echo "export OS_PROJECT_NAME={{ o_project.stdout_lines[0] }}" >> {{ inventory_dir }}/openstack.creds.tenant1;
+        cat {{ inventory_dir }}/openstack.creds.tenant1;
+      args:
+        executable: /bin/bash
+      register: o_env_modify
+    - debug: var=o_env_modify.stdout_lines
+
+    - name: create flavor and set flv property
+      shell:
+        source {{ inventory_dir }}/openstack.creds.tenant1;
+        export flv_name={{ prefix }}_$RANDOM;
+        echo $flv_name;
+        openstack {{ openstack_opts }} flavor create --vcpus 4 --ram 4098 --disk 10 $flv_name;
+        openstack {{ openstack_opts }} flavor set --property hw:vif_mutliqueue_enabled=true $flv_name;
+        openstack {{ openstack_opts }} flavor show $flv_name;
+      args:
+        executable: /bin/bash
+      register: o_create_flavor
+    - debug: var=o_create_flavor.stdout_lines
+
+    - name: create networks and VMs
+      shell:
+        source {{ inventory_dir }}/openstack.creds.tenant1;
+        export net_name={{ prefix }}_$RANDOM;
+        export sub_name={{ prefix }}_$RANDOM;
+        export vm1_name={{ prefix }}_$RANDOM;
+        export vm2_name={{ prefix }}_$RANDOM;
+        echo $net_name;
+        echo $sub_name;
+        echo $vm1_name;
+        echo $vm2_name;
+        nfvt={{ prefix }}_$RANDOM;
+        openstack {{ openstack_opts }} keypair create --public-key ./ssh/id_rsa.pub $nfvt;
+        openstack {{ openstack_opts }} security group create $nfvt;
+        if [[ "x{{ ipversion }}" = "xIPV4" ]]; then
+          openstack {{ openstack_opts }} security group rule create --ethertype IPv4 --ingress --protocol tcp --dst-port 1:65535 $nfvt;
+          openstack {{ openstack_opts }} security group rule create --ethertype IPv4 --ingress --protocol udp --dst-port 1:65535 $nfvt;
+          openstack {{ openstack_opts }} security group rule create --ethertype IPv4 --ingress --protocol icmp --dst-port 22 $nfvt;
+          openstack {{ openstack_opts }} network create --share --provider-physical-network {{ physnet }} --provider-network-type vlan --provider-segment {{ vlan_seg_ids[2] }} $net_name;
+          openstack {{ openstack_opts }} subnet create --network $net1_name --allocation-pool start=192.168.1.2,end=192.168.1.99 --gateway none --subnet-range 192.168.1.0/24 $sub_name;
+          openstack {{ openstack_opts }} server create --flavor {{ o_create_flavor.stdout_lines[0] }} --image {{ _image_ }} --nic net-id={{ _external_network_ }} --nic net-id=$net_name,v4-fixed-ip=192.168.1.2 --security-group $nfvt --key-name $nfvt --config-drive True $vm1_name --availability-zone {{ az_cinder }}:{{ dedicated_compute }};
+          openstack {{ openstack_opts }} server create --flavor {{ o_create_flavor.stdout_lines[0] }} --image {{ _image_ }} --nic net-id={{ _external_network_ }} --nic net-id=$net_name,v4-fixed-ip=192.168.1.12 --security-group $nfvt --key-name $nfvt --config-drive True $vm2_name --availability-zone {{ az_cinder }}:{{ dedicated_compute }};
+          sleep 60;
+          openstack {{ openstack_opts }} server list | grep $vm1_name | grep -E -o "\<{{ _external_network_ }}=[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\>" | awk -F '=' '{print $2}'xargs;
+          openstack {{ openstack_opts }} server list | grep $vm2_name | grep -E -o "\<{{ _external_network_ }}=[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\>" | awk -F '=' '{print $2}'xargs;
+        else
+          openstack {{ openstack_opts }} security group rule create --ethertype IPv6 --ingress --protocol tcp --dst-port 1:65535 $nfvt;
+          openstack {{ openstack_opts }} security group rule create --ethertype IPv6 --ingress --protocol udp --dst-port 1:65535 $nfvt;
+          openstack {{ openstack_opts }} security group rule create --ethertype IPv6 --ingress --protocol icmp --dst-port 22 $nfvt;
+          openstack {{ openstack_opts }} network create --share --provider-physical-network {{ physnet_vlan }} --provider-network-type vlan --provider-segment {{ vlan_seg_ids[0] }} $net_name;
+          openstack {{ openstack_opts }} subnet create --network $net_name  --allocation-pool start=5555:5555::2,end=5555:5555::20 --gateway none --subnet-range 5555:5555::/64 $sub_name --ip-version 6 --ipv6-ra-mode dhcpv6-stateful --ipv6-address-mode dhcpv6-stateful;
+          openstack {{ openstack_opts }} server create --flavor {{ _flavor_ }} --image {{ _image_ }} --nic net-id={{ _external_network_ }} --nic net-id=$net_name,v6-fixed-ip=5555:5555::2 --security-group $nfvt --key-name $nfvt $vm1_name --availability-zone {{ az_cinder }}:{{ dedicated_compute }} --config-drive True --user-data user_data.sh;
+          openstack {{ openstack_opts }} server create --flavor {{ _flavor_ }} --image {{ _image_ }} --nic net-id={{ _external_network_ }} --nic net-id=$net_name,v6-fixed-ip=5555:5555::12 --security-group $nfvt --key-name $nfvt $vm2_name --availability-zone {{ az_cinder }}:{{ dedicated_compute }} --config-drive True --user-data user_data.sh;
+          sleep 60;
+          openstack {{ openstack_opts }} server show $vm1_name | grep ACTIVE;
+          openstack {{ openstack_opts }} server show $vm2_name | grep ACTIVE;
+          openstack {{ openstack_opts }} server list | grep $vm1_name | grep -E -o "\<{{ _external_network_ }}={{ regex }}\>" | awk -F '=' '{print $2}'xargs;
+          openstack {{ openstack_opts }} server list | grep $vm2_name | grep -E -o "\<{{ _external_network_ }}={{ regex }}\>" | awk -F '=' '{print $2}'xargs;
+        fi;
+      args:
+        executable: /bin/bash
+      register: o_vlan
+    - debug: var=o_vlan.stdout_lines
+
+    - name: add nic 
+      shell:
+        source {{ inventory_dir }}/openstack.creds;
+        if [[ "x{{ ipversion }}" = "xIPV4" ]]; then
+          echo -------------------------------info of vm1----------------------------------;
+          ssh -i {{ inventory_dir }}/ssh/id_rsa -F {{ inventory_dir }}/ssh/ssh_config root@{{ o_vlan.stdout_lines[-2] }} \
+          'ifconfig eth0:0 192.168.1.3 netmask 255.255.255.0;
+          ifconfig eth0:1 192.168.1.4 netmask 255.255.255.0;
+          ifconfig eth0:2 192.168.1.5 netmask 255.255.255.0;
+          ifconfig eth0:3 192.168.1.6 netmask 255.255.255.0;
+          ifconfig';
+          sleep 10;
+          echo -------------------------------info of vm2----------------------------------;
+          ssh -i {{ inventory_dir }}/ssh/id_rsa -F {{ inventory_dir }}/ssh/ssh_config root@{{ o_vlan.stdout_lines[-1] }} \
+          'ifconfig eth0:0 192.168.1.13 netmask 255.255.255.0;
+          ifconfig eth0:1 192.168.1.14 netmask 255.255.255.0;
+          ifconfig eth0:2 192.168.1.15 netmask 255.255.255.0;
+          ifconfig eth0:3 192.168.1.16 netmask 255.255.255.0;
+          ifconfig;
+          echo -------------------------------cat /proc/interrupts----------------------------------;
+          cat /proc/interrupts;
+          echo ------------------------------------- ping ------------------------------------------;
+          ping -c 4 192.168.1.3;
+          ping -c 4 192.168.1.4;
+          ping -c 4 192.168.1.5;
+          ping -c 4 192.168.1.6;
+          echo -------------------------- statistic cat /proc/interrupts ---------------------------;
+          cat /proc/interrupts';
+        else
+          echo -------------------------------info of vm1----------------------------------;
+          ssh -i {{ inventory_dir }}/ssh/id_rsa -F {{ inventory_dir }}/ssh/ssh_config root@{{ o_vlan.stdout_lines[-2] }} \
+          'ifconfig eth1:0 inet6 add 5555:5555::5;
+          ifconfig eth1:1 inet6 add 5555:5555::6;
+          ifconfig eth1:2 inet6 add 5555:5555::7;
+          ifconfig eth1:3 inet6 add 5555:5555::8;
+          ifconfig';
+          sleep 10;
+          echo -------------------------------info of vm2----------------------------------;
+          ssh -i {{ inventory_dir }}/ssh/id_rsa -F {{ inventory_dir }}/ssh/ssh_config root@{{ o_vlan.stdout_lines[-1] }} \
+          'ifconfig eth1:0 inet6 add 5555:5555::15;
+          ifconfig eth1:1 inet6 add 5555:5555::16;
+          ifconfig eth1:2 inet6 add 5555:5555::17;
+          ifconfig eth1:3 inet6 add 5555:5555::18;
+          ifconfig;
+          echo -------------------------------cat /proc/interrupts----------------------------------;
+          cat /proc/interrupts;
+          echo ------------------------------------- ping ------------------------------------------;
+          ping6 -c 4 5555:5555::5;
+          ping6 -c 4 5555:5555::6;
+          ping6 -c 4 5555:5555::7;
+          ping6 -c 4 5555:5555::8;
+          echo -------------------------- statistic cat /proc/interrupts ---------------------------;
+          cat /proc/interrupts';
+        fi;
+      args:
+        executable: /bin/bash
+      register: cmd
+    - debug: var=cmd.stdout_lines
+
+    - name: ping from vm1
+      shell:
+        source {{ inventory_dir }}/openstack.creds;
+        ssh -i {{ inventory_dir }}/ssh/id_rsa -F {{ inventory_dir }}/ssh/ssh_config root@{{ o_vm_ip.stdout_lines[-2] }} \
+        'ifconfig eth0:0 192.168.1.13 netmask 255.255.255.0;
+        ifconfig eth0:1 192.168.1.14 netmask 255.255.255.0;
+        ifconfig eth0:2 192.168.1.15 netmask 255.255.255.0;
+        ifconfig eth0:3 192.168.1.16 netmask 255.255.255.0;
+        ifconfig;
+        echo -------------------------------cat /proc/interrupts----------------------------------;
+        cat /proc/interrupts;
+        echo ------------------------------------- ping ------------------------------------------;
+        ping -c 4 192.168.1.3;
+        ping -c 4 192.168.1.4;
+        ping -c 4 192.168.1.5;
+        ping -c 4 192.168.1.6;
+        echo -------------------------- statistic cat /proc/interrupts ---------------------------;
+        cat /proc/interrupts';
+      args:
+        executable: /bin/bash
+      register: cmd
+    - debug: var=cmd.stdout_lines
+
+
+

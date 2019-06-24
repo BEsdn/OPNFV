@@ -1,0 +1,147 @@
+---
+
+- hosts: localhost
+  tasks:
+    - include: clean_all.yml
+    - name: create role
+      shell:
+        source {{ inventory_dir }}/openstack.creds;
+        openstack {{ openstack_opts }} role list | grep -w admin | awk '{print $2}';
+        openstack {{ openstack_opts }} role show admin;
+      args:
+        executable: /bin/bash
+      register: o_role
+    - debug: var=o_role.stdout_lines
+
+    - name: create user with password
+      shell:
+        source {{ inventory_dir }}/openstack.creds;
+        user_name={{ prefix }}_$RANDOM;
+        user2_name={{ prefix }}_$RANDOM;
+        echo $user_name;
+        echo $user2_name;
+        pass_word=Cmcc@123;
+        echo $pass_word;
+        openstack {{ openstack_opts }} user create --domain $OS_PROJECT_DOMAIN_NAME --password $pass_word $user_name;
+        openstack {{ openstack_opts }} user create --domain $OS_PROJECT_DOMAIN_NAME --password $pass_word $user2_name;
+        openstack {{ openstack_opts }} user show $user_name;
+        openstack {{ openstack_opts }} user show $user2_name;
+        openstack {{ openstack_opts }} user list | grep $user_name | awk '{print $2}';
+        openstack {{ openstack_opts }} user list | grep $user2_name | awk '{print $2}';
+      args:
+        executable: /bin/bash
+      register: o_user
+    - debug: var=o_user.stdout_lines
+
+    - name: create project
+      shell:
+        source {{ inventory_dir }}/openstack.creds;
+        pj_name={{ prefix }}_$RANDOM;
+        pj2_name={{ prefix }}_$RANDOM;
+        echo $pj_name;
+        echo $pj2_name;
+        openstack {{ openstack_opts }} project create --domain $OS_PROJECT_DOMAIN_NAME $pj_name;
+        openstack {{ openstack_opts }} project create --domain $OS_PROJECT_DOMAIN_NAME $pj2_name;
+        openstack {{ openstack_opts }} project show $pj_name;
+        openstack {{ openstack_opts }} project show $pj2_name;
+        openstack {{ openstack_opts }} project list | grep $pj_name | awk '{print $2}';
+        openstack {{ openstack_opts }} project list | grep $pj2_name | awk '{print $2}';
+      args:
+        executable: /bin/bash
+      register: o_project
+    - debug: var=o_project.stdout_lines
+
+    - name:  associate project with user and role
+      shell:
+        source {{ inventory_dir }}/openstack.creds;
+        openstack {{ openstack_opts }} role add --project {{ o_project.stdout_lines[0] }} --user {{ o_user.stdout_lines[0] }} {{ o_role.stdout_lines[0] }};
+        openstack {{ openstack_opts }} role add --project {{ o_project.stdout_lines[1] }} --user {{ o_user.stdout_lines[1] }} {{ o_role.stdout_lines[0] }};
+        openstack {{ openstack_opts }} role assignment list | grep {{ o_project.stdout_lines[-2] }} | grep {{ o_role.stdout_lines[0] }} | grep {{ o_user.stdout_lines[-2] }};
+        openstack {{ openstack_opts }} role assignment list | grep {{ o_project.stdout_lines[-1] }} | grep {{ o_role.stdout_lines[0] }} | grep {{ o_user.stdout_lines[-1] }};
+      args:
+        executable: /bin/bash
+      register: o_relation
+    - debug: var=o_relation.stdout_lines
+
+    - name: modify env for project1
+      shell:
+        cp {{ inventory_dir }}/openstack.creds.tenant {{ inventory_dir }}/openstack.creds.tenant1;
+        echo "export OS_PASSWORD=Cmcc@123" >> {{ inventory_dir }}/openstack.creds.tenant1;
+        echo "export OS_USERNAME={{o_user.stdout_lines[0] }}" >> {{ inventory_dir }}/openstack.creds.tenant1;
+        echo "export OS_PROJECT_NAME={{ o_project.stdout_lines[0] }}" >> {{ inventory_dir }}/openstack.creds.tenant1;
+        echo "export OS_TENANT_NAME=={{ o_project.stdout_lines[0] }}" >> {{ inventory_dir }}/openstack.creds.tenant1;
+        cat {{ inventory_dir }}/openstack.creds.tenant1;
+      args:
+        executable: /bin/bash
+      register: o_env_modify
+    - debug: var=o_env_modify.stdout_lines
+
+    - name: modify env for project2
+      shell:
+        cp {{ inventory_dir }}/openstack.creds.tenant {{ inventory_dir }}/openstack.creds.tenant2;
+        echo "export OS_PASSWORD=Cmcc@123" >> {{ inventory_dir }}/openstack.creds.tenant2;
+        echo "export OS_USERNAME={{o_user.stdout_lines[1] }}" >> {{ inventory_dir }}/openstack.creds.tenant2;
+        echo "export OS_PROJECT_NAME={{ o_project.stdout_lines[1] }}" >> {{ inventory_dir }}/openstack.creds.tenant2;
+        echo "export OS_TENANT_NAME=={{ o_project.stdout_lines[1] }}" >> {{ inventory_dir }}/openstack.creds.tenant2;
+        cat {{ inventory_dir }}/openstack.creds.tenant2;
+      args:
+        executable: /bin/bash
+      register: o_env_modify
+    - debug: var=o_env_modify.stdout_lines
+
+    - name: create VLAN network and subnet for project1
+      shell: |
+        source {{ inventory_dir }}/openstack.creds.tenant1;
+        export net_name={{ prefix }}_$RANDOM;
+        export sub_name={{ prefix }}_$RANDOM;
+        echo $sub_name;
+        echo $net_name;
+        if [[ "x{{ ipversion }}" = "xIPV4" ]]; then
+          openstack {{ openstack_opts }} network create --share --provider-physical-network {{ physnet_vlan }} --provider-network-type vlan --provider-segment {{ vlan_seg_ids[0] }} $net_name;
+          openstack {{ openstack_opts }} subnet create --network $net_name --allocation-pool start=10.0.1.100,end=10.0.0.200 --dhcp --gateway none --subnet-range 10.0.1.0/24 $sub_name;
+        else
+          openstack {{ openstack_opts }} network create --share --provider-physical-network {{ physnet_vlan }} --provider-network-type vlan --provider-segment {{ vlan_seg_ids[0] }} $net_name;
+          openstack {{ openstack_opts }} subnet create --network $net_name --allocation-pool start=5555:5555::2,end=5555:5555::10 --gateway none --subnet-range 5555:5555::/64 $sub_name --ip-version 6 --ipv6-ra-mode dhcpv6-stateful --ipv6-address-mode dhcpv6-stateful;
+        fi;
+      args:
+        executable: /bin/bash
+      register: o_vlan
+    - debug: var=o_vlan.stdout_lines
+    - debug: var=o_vlan.stderr_lines
+
+    - name: create vm for project2 using net1-project1
+      shell: |
+        source {{ inventory_dir }}/openstack.creds.tenant2;
+        export vm1_name={{ prefix }}_$RANDOM;
+        echo $vm1_name;
+        nfvt={{ prefix }}_$RANDOM;
+        openstack {{ openstack_opts }} keypair create --public-key ./ssh/id_rsa.pub $nfvt;
+        if [[ "x{{ ipversion }}" = "xIPV4" ]]; then
+          openstack {{ openstack_opts }} server create --flavor {{ _flavor_ }} --image {{ _image_ }} --nic net-id={{ o_vlan.stdout_lines[1] }} --nic net-id={{ _external_network_ }} --key-name $nfvt --config-drive True $vm1_name --availability-zone {{ az_cinder }}:{{ dedicated_compute }};
+          sleep 60;
+          openstack {{ openstack_opts }} server show $vm1_name | grep ACTIVE;
+          openstack {{ openstack_opts }} server list | grep $vm1_name | grep -E -o "\<{{ _external_network_ }}=[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\>" | awk -F '=' '{print $2}'xargs;
+        else
+          openstack {{ openstack_opts }} server create --flavor {{ _flavor_ }} --image {{ _image_ }} --nic net-id={{ o_vlan.stdout_lines[1] }} --nic net-id={{ _external_network_ }} --key-name $nfvt $vm1_name --availability-zone {{ az_cinder }}:{{ dedicated_compute }} --config-drive True --user-data user_data.sh;
+          sleep 60;
+          openstack {{ openstack_opts }} server show $vm1_name | grep ACTIVE;
+          openstack {{ openstack_opts }} server list | grep $vm1_name | grep -E -o "\<{{ _external_network_ }}={{ regex }}\>" | awk -F '=' '{print $2}'xargs;
+        fi;
+      args:
+        executable: /bin/bash
+      register: o_create_vm
+    - debug: var=o_create_vm.stdout_lines
+    - debug: var=o_create_vm.stderr_lines
+
+    - name: show resources for project2
+      shell: |
+        source {{ inventory_dir }}/openstack.creds.tenant2;
+        openstack {{ openstack_opts }} server show {{ o_create_vm.stdout_lines[0] }};
+        ssh -i {{ inventory_dir }}/ssh/id_rsa -F {{ inventory_dir }}/ssh/ssh_config root@{{ o_create_vm.stdout_lines[-1] }} \
+        'echo -------------------------------- show network info -----------------------------;
+        ifconfig -a;'
+      args:
+        executable: /bin/bash
+      register: cmd
+    - debug: var=cmd.stdout_lines
+

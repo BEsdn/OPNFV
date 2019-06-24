@@ -1,0 +1,64 @@
+---
+# hw:cpu_realtime=yes，hw:cpu_realtime_mask=^0-1 ,hw:cpu_policy=dedicated
+- hosts: localhost
+  tasks:
+    - include: clean_all.yml
+    - include: dedicated_compute.yml
+    - name: set flv_dedicated_compute property
+      shell:
+        source {{ inventory_dir }}/openstack.creds;
+        openstack {{ openstack_opts }} flavor set --property hw:cpu_realtime=yes {{ prefix }}_dedicated_compute;
+        openstack {{ openstack_opts }} flavor set --property hw:cpu_realtime_mask=^0-1 {{ prefix }}_dedicated_compute;
+        openstack {{ openstack_opts }} flavor set --property hw:cpu_policy=dedicated {{ prefix }}_dedicated_compute;
+        openstack {{ openstack_opts }} flavor show {{ prefix }}_dedicated_compute;
+      args:
+        executable: /bin/bash
+      register: o_set_flv
+    - debug: var=o_set_flv.stdout_lines
+
+    - name: create VM
+      shell:
+        source {{ inventory_dir }}/openstack.creds;
+        export vm1_name={{ prefix }}_$RANDOM;
+        export vm2_name={{ prefix }}_$RANDOM;
+        export vm3_name={{ prefix }}_$RANDOM;
+        openstack {{ openstack_opts }} server create --flavor {{ prefix }}_dedicated_compute --image {{ _image_ }} \
+        --nic net-id={{ _external_network_ }}  --security-group {{ _security_group_ }} --key-name {{ _key_pair_ }} $vm1_name;
+        openstack {{ openstack_opts }} server show $vm1_name | grep 'OS-EXT-SRV-ATTR:instance_name' | awk -F'|' '{print $3}' | xargs;
+        openstack {{ openstack_opts }} server create --flavor {{ prefix }}_dedicated_compute --image {{ _image_ }} \
+        --nic net-id={{ _external_network_ }}  --security-group {{ _security_group_ }} --key-name {{ _key_pair_ }} $vm2_name;
+        openstack {{ openstack_opts }} server show $vm2_name | grep 'OS-EXT-SRV-ATTR:instance_name' | awk -F'|' '{print $3}' | xargs;
+        openstack {{ openstack_opts }} server create --flavor {{ prefix }}_dedicated_compute --image {{ _image_ }} \
+        --nic net-id={{ _external_network_ }}  --security-group {{ _security_group_ }} --key-name {{ _key_pair_ }} $vm3_name;
+        openstack {{ openstack_opts }} server show $vm3_name | grep 'OS-EXT-SRV-ATTR:instance_name' | awk -F'|' '{print $3}' | xargs;
+        echo $vm1_name;
+        echo $vm2_name;
+        echo $vm3_name;
+      args:
+          executable: /bin/bash
+      register: o_create_vm
+    - debug: var=o_create_vm.stdout_lines
+    - debug: var=o_create_vm.stderr_lines
+
+- hosts: dedicated_compute
+  tasks:
+    - name: show realtime info of VM
+      ignore_errors: True
+      shell:
+        sleep 20;
+        uname -a;
+        cat /boot/config-* | grep CONFIG_PREEMPT_RT || echo '_ERROR_';
+      args:
+          executable: /bin/bash
+      register: cmd
+    - debug: var=cmd.stdout_lines
+    - debug: var=cmd.stderr_lines
+
+- hosts: localhost
+  tasks:
+    - name: delete VM
+      shell:
+        source {{ inventory_dir }}/openstack.creds;
+        openstack {{ openstack_opts }} server delete {{ hostvars['localhost']['o_create_vm'].stdout_lines[-1] }};
+      args:
+          executable: /bin/bash

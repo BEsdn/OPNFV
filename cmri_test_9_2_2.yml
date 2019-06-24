@@ -1,0 +1,25 @@
+---
+
+- hosts: controller
+  tasks:
+    #- include: clean_all.yml
+    - name: heartbeat isolation Single node
+      shell: |
+        source openstack.creds;
+        echo "----------------------show the master of service----------------------";
+        sudo cps template-instance-list  --service rabbitmq  rabbitmq;
+        export host_id=`sudo cps template-instance-list  --service rabbitmq  rabbitmq | grep active |awk -F'|' '{print $5}' | xargs`;
+        echo "the  master node id is:$host_id";
+        echo "---------------------------kill the master----------------------------";
+        sudo cps host-template-instance-operate --service rabbitmq  rabbitmq --action stop --host $host_id;
+        sleep 60;
+        echo "----------------------show the master of service----------------------";
+        sudo cps template-instance-list  --service rabbitmq  rabbitmq;
+        echo "---------------------------start the node-----------------------------";
+        sudo cps host-template-instance-operate --service rabbitmq  rabbitmq --action start --host $host_id;
+        sleep 60;
+        sudo cps template-instance-list  --service rabbitmq  rabbitmq;
+      args:
+        executable: /bin/bash
+      register: o_vlan
+    - debug: var=o_vlan.stdout_lines

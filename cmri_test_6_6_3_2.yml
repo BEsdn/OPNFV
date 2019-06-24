@@ -1,0 +1,100 @@
+---
+
+- hosts: localhost
+  tasks:
+    - include: clean_all.yml
+    - name: create role
+      shell:
+        source {{ inventory_dir }}/openstack.creds;
+        openstack {{ openstack_opts }} role list | grep -w admin | awk '{print $2}';
+        openstack {{ openstack_opts }} role show admin;
+      args:
+        executable: /bin/bash
+      register: o_role
+    - debug: var=o_role.stdout_lines
+
+    - name: create user with password
+      shell:
+        source {{ inventory_dir }}/openstack.creds;
+        user_name={{ prefix }}_$RANDOM;
+        echo $user_name;
+        pass_word=Cmcc@123;
+        echo $pass_word;
+        openstack {{ openstack_opts }} user create --domain $OS_PROJECT_DOMAIN_NAME --password $pass_word $user_name;
+        openstack {{ openstack_opts }} user show $user_name;
+        openstack {{ openstack_opts }} user list | grep $user_name | awk '{print $2}';
+      args:
+        executable: /bin/bash
+      register: o_user
+    - debug: var=o_user.stdout_lines
+
+    - name: create project
+      shell:
+        source {{ inventory_dir }}/openstack.creds;
+        pj_name={{ prefix }}_$RANDOM;
+        echo $pj_name;
+        openstack {{ openstack_opts }} project create --domain $OS_PROJECT_DOMAIN_NAME $pj_name;
+        openstack {{ openstack_opts }} project show $pj_name;
+        openstack {{ openstack_opts }} project list | grep $pj_name | awk '{print $2}';
+      args:
+        executable: /bin/bash
+      register: o_project
+    - debug: var=o_project.stdout_lines
+
+    - name:  associate project with user and role
+      shell:
+        source {{ inventory_dir }}/openstack.creds;
+        openstack {{ openstack_opts }} role add --project {{ o_project.stdout_lines[0] }} --user {{ o_user.stdout_lines[0] }} {{ o_role.stdout_lines[0] }};
+        openstack {{ openstack_opts }} role assignment list | grep {{ o_project.stdout_lines[-1] }} | grep {{ o_role.stdout_lines[0] }} | grep {{ o_user.stdout_lines[-1] }};
+      args:
+        executable: /bin/bash
+      register: o_relation
+    - debug: var=o_relation.stdout_lines
+
+    - name: modify env for project1
+      shell:
+        cp {{ inventory_dir }}/openstack.creds.tenant {{ inventory_dir }}/openstack.creds.tenant1;
+        echo "export OS_PASSWORD=Cmcc@123" >> {{ inventory_dir }}/openstack.creds.tenant1;
+        echo "export OS_USERNAME={{o_user.stdout_lines[0] }}" >> {{ inventory_dir }}/openstack.creds.tenant1;
+        echo "export OS_PROJECT_NAME={{ o_project.stdout_lines[0] }}" >> {{ inventory_dir }}/openstack.creds.tenant1;
+        cat {{ inventory_dir }}/openstack.creds.tenant1;
+      args:
+        executable: /bin/bash
+      register: o_env_modify
+    - debug: var=o_env_modify.stdout_lines
+
+    - name: create VLAN network and subnet
+      shell:
+        source {{ inventory_dir }}/openstack.creds.tenant1;
+        export vm1_name={{ prefix }}_$RANDOM;
+        echo $vm1_name;
+        nfvt={{ prefix }}_$RANDOM;
+        openstack {{ openstack_opts }} keypair create --public-key ./ssh/id_rsa.pub $nfvt;
+        if [[ "x{{ ipversion }}" = "xIPV4" ]]; then
+          openstack {{ openstack_opts }} server create --flavor {{ _flavor_ }} --image {{ _image_ }} --nic net-id={{ _external_network_ }} --security-group {{ _security_group_ }} --key-name {{ _key_pair_ }} --availability-zone {{ az_cinder }}:{{ dedicated_compute }} $vm1_name;
+          sleep 90;
+          openstack {{ openstack_opts }} server show $vm1_name | grep ACTIVE;
+          openstack {{ openstack_opts }} server list | grep $vm1_name | grep -E -o "\<{{ _external_network_ }}=[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\>" | awk -F '=' '{print $2}'xargs;
+        else  
+          openstack {{ openstack_opts }} server create --flavor {{ _flavor_ }} --image {{ _image_ }} --nic net-id={{ _external_network_ }} --key-name $nfvt $vm1_name --availability-zone {{ az_cinder }}:{{ dedicated_compute }} --config-drive True --user-data user_data.sh;
+          sleep 90;
+          openstack {{ openstack_opts }} server show $vm1_name | grep ACTIVE;
+          openstack {{ openstack_opts }} server list | grep $vm1_name | grep -E -o "\<{{ _external_network_ }}={{ regex }}\>" | awk -F '=' '{print $2}'xargs;
+        fi;
+      args:
+        executable: /bin/bash
+      register: o_vlan
+    - debug: var=o_vlan.stdout_lines
+
+    - name: show info of vm
+      shell:
+        source {{ inventory_dir }}/openstack.creds.tenant1;
+        ssh -i {{ inventory_dir }}/ssh/id_rsa -F {{ inventory_dir }}/ssh/ssh_config root@{{ o_vlan.stdout_lines[-1] }} \
+        'ifconfig;
+        echo ;
+        echo -------------------------------dhcp----------------------------------;
+        cat /etc/sysconfig/network-scripts/ifcfg-eth0;'
+      args:
+        executable: /bin/bash
+      register: cmd
+    - debug: var=cmd.stdout_lines

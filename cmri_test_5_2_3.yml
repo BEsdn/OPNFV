@@ -1,0 +1,99 @@
+---
+
+- hosts: localhost
+  tasks:
+    - name: create flavor
+      shell:
+        source {{ inventory_dir }}/openstack.creds;
+        export flv_name={{ prefix }}_$RANDOM;
+        echo $flv_name;
+        openstack {{ openstack_opts }} flavor create --vcpus 1 --ram 4098 --disk 10 $flv_name;
+      args:
+        executable: /bin/bash
+      register: o_create_flavor
+    - debug: var=o_create_flavor.stdout_lines
+
+    - name: create networks
+      shell:
+        source {{ inventory_dir }}/openstack.creds;
+        export net1_name={{ prefix }}_$RANDOM;
+        echo $net1_name;
+        openstack {{ openstack_opts }} network create --share --provider-physical-network {{ physnet }} --provider-network-type vlan --provider-segment {{ vlan_seg_ids[1] }} $net1_name;
+      args:
+        executable: /bin/bash
+      register: o_create_net
+    - debug: var=o_create_net.stdout_lines
+
+    - name: create subnets
+      shell:
+        sleep 5;
+        source {{ inventory_dir }}/openstack.creds;
+        export sub_name={{ prefix }}_$RANDOM;
+        nfvt={{ prefix }}_$RANDOM;
+        openstack {{ openstack_opts }} keypair create --public-key ./ssh/id_rsa.pub $nfvt;
+        openstack {{ openstack_opts }} security group create $nfvt;
+        echo $sub_name;
+        if [[ "x{{ ipversion }}" = "xIPV4" ]]; then
+          openstack {{ openstack_opts }} security group rule create --ethertype IPv4 --ingress --protocol tcp --dst-port 1:65535 $nfvt;
+          openstack {{ openstack_opts }} security group rule create --ethertype IPv4 --ingress --protocol udp --dst-port 1:65535 $nfvt;
+          openstack {{ openstack_opts }} security group rule create --ethertype IPv4 --ingress --protocol icmp --dst-port 22 $nfvt;
+          openstack {{ openstack_opts }} subnet create --network '{{ o_create_net.stdout_lines[0] }}' --allocation-pool start=10.0.3.50,end=10.0.3.99 --gateway 10.0.3.1 --subnet-range 10.0.3.0/24 $sub_name;
+        else
+          openstack {{ openstack_opts }} security group rule create --ethertype IPv6 --ingress --protocol tcp --dst-port 1:65535 $nfvt;
+          openstack {{ openstack_opts }} security group rule create --ethertype IPv6 --ingress --protocol udp --dst-port 1:65535 $nfvt;
+          openstack {{ openstack_opts }} security group rule create --ethertype IPv6 --ingress --protocol icmp --dst-port 22 $nfvt;
+          openstack {{ openstack_opts }} subnet create --network '{{ o_create_net.stdout_lines[0] }}' --allocation-pool start=5555:5555::2,end=5555:5555::10 --gateway none --subnet-range 5555:5555::/64 $sub_name --ip-version 6 --ipv6-ra-mode dhcpv6-stateful --ipv6-address-mode dhcpv6-stateful;
+        fi;
+      args:
+        executable: /bin/bash
+      register: o_create_sub
+    - debug: var=o_create_sub.stdout_lines
+
+    - name: show the number of compute vcpus
+      shell: 
+        source {{ inventory_dir }}/openstack.creds;
+        openstack {{ openstack_opts }} hypervisor show {{ dedicated_compute }} | grep vcpus | awk '{print $2$4}';
+        openstack {{ openstack_opts }} hypervisor show {{ dedicated_compute }} | grep vcpus | awk '{print $4}';
+      args:
+        executable: /bin/bash
+      register: cmd
+    - debug: var=cmd.stdout_lines
+
+    - name: create VM
+      shell:
+        if [[ "x{{ ipversion }}" = "xIPV4" ]]; then
+          ((i={{ cmd.stdout_lines[-1]|int }}+1));
+          while (($i<={{ cmd.stdout_lines[-2]|int }}));
+          do
+          source {{ inventory_dir }}/openstack.creds;
+          export vm_name={{ prefix }}_$RANDOM;
+          export $vm_name;
+          openstack {{ openstack_opts }} server create --flavor {{ o_create_flavor.stdout_lines[0] }} --image {{ _image_ }} \
+          --nic net-id={{ o_create_net.stdout_lines[0] }}  --security-group {{ _security_group_ }} --key-name {{ _key_pair_ }} --availability-zone {{ az_cinder }}:{{ dedicated_compute }} $vm_name;       
+          openstack {{ openstack_opts }} hypervisor show 3 | grep vcpus_used | awk '{print $2$4}';
+          echo "the number of vm is " $i;
+          let ++i;
+          sleep 30;
+          done;
+        else
+          ((i={{ cmd.stdout_lines[-1]|int }}+1));
+          while (($i<={{ cmd.stdout_lines[-2]|int }}));
+          do
+          source {{ inventory_dir }}/openstack.creds;
+          export vm_name={{ prefix }}_$RANDOM;
+          export $vm_name;
+          openstack {{ openstack_opts }} server create --flavor {{ _flavor_ }} --image {{ _image_ }} --nic net-id={{ _external_network_ }} --nic net-id=et-id={{ o_create_net.stdout_lines[0] }} --security-group $nfvt --key-name $nfvt $vm_name --availability-zone {{ az_cinder }}:{{ dedicated_compute }} --config-drive True --user-data user_data.sh;      
+          openstack {{ openstack_opts }} hypervisor show 3 | grep vcpus_used | awk '{print $2$4}';
+          echo "the number of vm is " $i;
+          let ++i;
+          sleep 30;
+          done;
+        fi;
+      args:
+          executable: /bin/bash
+      register: o_create_vm
+    - debug: var=o_create_vm.stdout_lines
+
+
+
+

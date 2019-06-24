@@ -1,0 +1,79 @@
+- hosts: localhost
+  tasks:
+    - include: clean_all.yml
+    - name: create VLAN network and subnet
+      shell:
+        source {{ inventory_dir }}/openstack.creds;
+        export net_name={{ prefix }}_$RANDOM;
+        echo $net_name;
+        export sub_name={{ prefix }}_$RANDOM;
+        export vm1_name={{ prefix }}_$RANDOM;
+        export vm2_name={{ prefix }}_$RANDOM;
+        echo $net_name;
+        echo $sub_name;
+        echo $vm1_name;
+        echo $vm2_name;
+        nfvt={{ prefix }}_$RANDOM;
+        openstack {{ openstack_opts }} keypair create --public-key ./ssh/id_rsa.pub $nfvt;
+        if [[ "x{{ ipversion }}" = "xIPV4" ]]; then
+          openstack {{ openstack_opts }} network create --share --provider-physical-network {{ physnet_dpdk }} --provider-network-type vlan --provider-segment {{ vlan_seg_ids[3] }} $net_name;
+          openstack {{ openstack_opts }} subnet create --network $net_name --allocation-pool start=192.168.1.2,end=192.168.1.99 --gateway none --subnet-range 192.168.1.0/24 $sub_name;
+          echo 'create port for network 1--------------------------';
+          export port1_name={{ prefix }}_$RANDOM;
+          export port2_name={{ prefix }}_$RANDOM;
+          openstack {{ openstack_opts }} port create --network {{ _external_network_ }} --vnic-type direct --host {{ host_for_sirov1 }} $port1_name; 
+          openstack {{ openstack_opts }} port create --network $net_name --vnic-type direct --host {{ host_for_sirov1 }} --fixed-ip subnet=$sub_name,ip-address=192.168.1.2 $port2_name;
+          port1=`openstack {{ openstack_opts }} port list | grep $port1_name | awk -F '|' '{print $2}' | xargs`; 
+          port2=`openstack {{ openstack_opts }} port list | grep $port2_name | awk -F '|' '{print $2}' | xargs`;
+          openstack {{ openstack_opts }} server create --flavor {{ _flavor_ }} --image {{ _image_ }} --nic port-id=$port1 --nic port-id=$port2 --key-name $nfvt --config-drive True $vm1_name --availability-zone {{ az_cinder }}:{{ host_for_sirov1 }};
+          openstack {{ openstack_opts }} server create --flavor {{ _flavor_ }} --image {{ _image_ }} --nic net-id=$net_name,v4-fixed-ip=192.168.1.3 --nic net-id={{ _external_network_ }} --security-group {{ _security_group_ }} --key-name {{ _key_pair_ }} --config-drive True --availability-zone {{ az_cinder }}:{{ dedicated_compute }} $vm2_name;
+          sleep 60;
+          openstack {{ openstack_opts }} server show $vm1_name | grep ACTIVE;
+          openstack {{ openstack_opts }} server show $vm2_name | grep ACTIVE;
+          openstack {{ openstack_opts }} server list | grep $vm1_name | grep -E -o "\<{{ _external_network_ }}=[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\>" | awk -F '=' '{print $2}'xargs;
+          openstack {{ openstack_opts }} server list | grep $vm1_name | grep -E -o "\<$net_name=[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\>" | awk -F '=' '{print $2}'xargs;
+          openstack {{ openstack_opts }} server list | grep $vm2_name | grep -E -o "\<{{ _external_network_ }}=[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\>" | awk -F '=' '{print $2}'xargs;
+          openstack {{ openstack_opts }} server list | grep $vm2_name | grep -E -o "\<$net_name=[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\>" | awk -F '=' '{print $2}'xargs;
+        else
+          openstack {{ openstack_opts }} network create --share --provider-physical-network {{ physnet_dpdk }} --provider-network-type vlan --provider-segment {{ vlan_seg_ids[0] }} $net_name;
+          openstack {{ openstack_opts }} subnet create --network $net_name  --allocation-pool start=5555:5555::2,end=5555:5555::10 --gateway none --subnet-range 5555:5555::/64 $sub_name --ip-version 6 --ipv6-ra-mode dhcpv6-stateful --ipv6-address-mode dhcpv6-stateful;
+          echo 'create port for network 1--------------------------';
+          export port1_name={{ prefix }}_$RANDOM;
+          export port2_name={{ prefix }}_$RANDOM;
+          openstack {{ openstack_opts }} port create --network {{ _external_network_ }} --vnic-type direct --host {{ host_for_sirov1 }} $port1_name;
+          openstack {{ openstack_opts }} port create --network $net_name --vnic-type direct --host {{ host_for_sirov1 }} --fixed-ip subnet=$sub_name,ip-address=5555:5555::5 $port2_name;
+          port1=`openstack {{ openstack_opts }} port list | grep $port1_name | awk -F '|' '{print $2}' | xargs`; 
+          port2=`openstack {{ openstack_opts }} port list | grep $port2_name | awk -F '|' '{print $2}' | xargs`;
+          openstack {{ openstack_opts }} server create --flavor {{ _flavor_ }} --image {{ _image_ }} --nic port-id=$port1 --nic port-id=$port2 --key-name $nfvt $vm1_name --availability-zone {{ az_cinder }}:{{ host_for_sirov1 }} --config-drive True --user-data user_data.sh;
+          openstack {{ openstack_opts }} server create --flavor {{ _flavor_ }} --image {{ _image_ }} --nic net-id={{ _external_network_ }} --nic net-id=$net_name,v6-fixed-ip=5555:5555::6 --security-group {{ _security_group_ }} --key-name {{ _key_pair_ }} $vm2_name --availability-zone {{ az_cinder }}:{{ dedicated_compute }} --config-drive True --user-data user_data.sh;
+          sleep 60;
+          openstack {{ openstack_opts }} server show $vm1_name | grep ACTIVE;
+          openstack {{ openstack_opts }} server show $vm2_name | grep ACTIVE;
+          openstack {{ openstack_opts }} server list | grep $vm1_name | grep -E -o "\<{{ _external_network_ }}={{ regex }}\>" | awk -F '=' '{print $2}'xargs;
+          openstack {{ openstack_opts }} server list | grep $vm1_name | grep -E -o "\<$net_name={{ regex }}\>" | awk -F '=' '{print $2}'xargs;
+          openstack {{ openstack_opts }} server list | grep $vm2_name | grep -E -o "\<{{ _external_network_ }}={{ regex }}\>" | awk -F '=' '{print $2}'xargs;
+          openstack {{ openstack_opts }} server list | grep $vm2_name | grep -E -o "\<$net_name={{ regex }}\>" | awk -F '=' '{print $2}'xargs;
+        fi;
+      args:
+        executable: /bin/bash
+      register: o_vlan
+    - debug: var=o_vlan.stdout_lines
+
+    - name: VM show information and pings each other
+      shell:
+        source {{ inventory_dir }}/openstack.creds;
+        echo ------------------------------------------ show info of VM1 ------------------------------------------;
+        ssh -i {{ inventory_dir }}/ssh/id_rsa -F {{ inventory_dir }}/ssh/ssh_config root@{{ o_vlan.stdout_lines[-4] }} \
+        'ifconfig' ;
+        echo ------------------------------------------ show info of VM2 ------------------------------------------;
+        ssh -i {{ inventory_dir }}/ssh/id_rsa -F {{ inventory_dir }}/ssh/ssh_config root@{{ o_vlan.stdout_lines[-2] }} \
+        'ifconfig' ;
+        echo -------------------------------------------- ping from VM --------------------------------------------;
+        ssh -i {{ inventory_dir }}/ssh/id_rsa -F {{ inventory_dir }}/ssh/ssh_config root@{{ o_vlan.stdout_lines[-4] }} \
+        'ping6 -c 6 {{ o_vlan.stdout_lines[-2] }}' ;
+      args:
+        executable: /bin/bash
+      register: cmd
+    - debug: var=cmd.stdout_lines
+
+    # - include: clean_all.yml
